@@ -122,15 +122,13 @@ Compose 的环境变量和容器限制配置见 [Docker 官方说明](https://do
 ## 通过 GitHub 更新
 
 项目仓库：[zjwlmq/nutrient2api](https://github.com/zjwlmq/nutrient2api)。
-私有仓库需要先完成 GitHub 认证，服务器可使用只读 Deploy key。
-配置好 HTTPS 认证后，首次部署可执行：
+仓库公开，服务器克隆和拉取更新不需要 GitHub 登录。首次部署可执行：
 
 ```bash
 git clone https://github.com/zjwlmq/nutrient2api.git
 cd nutrient2api
 ```
 
-如果服务器使用 SSH Deploy key，改用 `git@github.com:zjwlmq/nutrient2api.git` 克隆。
 然后按前文配置 `.env` 并启动。
 若之前使用 ZIP 部署，应先备份 `.env`，将仓库克隆到新目录，再复制 `.env` 并按原端口和反向代理配置切换。
 
