@@ -29,6 +29,23 @@ def validate_password(password):
         raise ValueError("管理员密码需要 12–256 个字符")
 
 
+def account_values(body):
+    name = body.get("name", "")
+    key = body.get("api_key", "")
+    enabled = body.get("enabled", True)
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
+        raise ValueError("账户名称需要 1–80 个字符")
+    if not isinstance(key, str) or len(key) > 4096 or any(ord(c) < 33 or ord(c) > 126 for c in key):
+        raise ValueError("Key 只能包含可打印的英文字符，且不能含空格")
+    if not isinstance(enabled, bool):
+        raise ValueError("启用状态无效")
+    return name.strip(), key, enabled
+
+
+def masked_key(key):
+    return "•••• " + (key[-4:] if len(key) > 8 else "••••")
+
+
 class Store:
     def __init__(self, directory, api_key="", client_token=""):
         self.directory = Path(directory).resolve()
@@ -62,6 +79,9 @@ class Store:
                 if api_key:
                     db.execute("INSERT INTO accounts(name,api_key,created_at) VALUES (?,?,?)",
                                ("原 .env 账户", api_key, time.time()))
+            # Add the separate, import-only credential to existing databases too.
+            if not self.get(db, "key_import_token"):
+                self.put(db, "key_import_token", "n2k_" + secrets.token_urlsafe(32))
         if os.name != "nt":
             os.chmod(self.directory, 0o700)
             os.chmod(self.path, 0o600)
@@ -137,16 +157,41 @@ class Store:
             self.put(db, "client_token", token)
         return token
 
+    def rotate_key_import_token(self):
+        token = "n2k_" + secrets.token_urlsafe(32)
+        with self.transaction() as db:
+            self.put(db, "key_import_token", token)
+        return token
+
+    @staticmethod
+    def _insert_account(db, name, key, enabled):
+        if db.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] >= 50:
+            raise ValueError("最多可保存 50 个账户")
+        return db.execute("INSERT INTO accounts(name,api_key,enabled,created_at) VALUES (?,?,?,?)",
+                          (name, key, int(enabled), time.time())).lastrowid
+
+    def receive_key(self, body):
+        """Idempotent, add-only import. A repeated key never edits an account."""
+        if set(body) - {"api_key", "name", "enabled"}:
+            raise ValueError("只支持 api_key、name 和 enabled 字段")
+        values = dict(body)
+        values.setdefault("name", "API 账户")
+        name, key, enabled = account_values(values)
+        if not key:
+            raise ValueError("请填写 Nutrient API Key")
+        with self.transaction() as db:
+            row = db.execute("SELECT * FROM accounts WHERE api_key=?", (key,)).fetchone()
+            created = row is None
+            if created:
+                account_id = self._insert_account(db, name, key, enabled)
+                if "name" not in body:
+                    db.execute("UPDATE accounts SET name=? WHERE id=?", ("API 账户 %s" % account_id, account_id))
+                row = db.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
+            return {"id": row["id"], "name": row["name"], "key_mask": masked_key(row["api_key"]),
+                    "enabled": bool(row["enabled"]), "created": created}
+
     def save_account(self, body, account_id=None):
-        name = body.get("name", "")
-        key = body.get("api_key", "")
-        enabled = body.get("enabled", True)
-        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
-            raise ValueError("账户名称需要 1–80 个字符")
-        if not isinstance(key, str) or len(key) > 4096 or any(ord(c) < 33 or ord(c) > 126 for c in key):
-            raise ValueError("Key 只能包含可打印的英文字符，且不能含空格")
-        if not isinstance(enabled, bool):
-            raise ValueError("启用状态无效")
+        name, key, enabled = account_values(body)
         with self.transaction() as db:
             current = db.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone() if account_id else None
             if account_id and not current:
@@ -161,10 +206,7 @@ class Store:
                                 0 if changed else current["last_status"], 0 if changed else current["last_checked"],
                                 0 if changed else current["cooldown_until"], account_id))
                 else:
-                    if db.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] >= 50:
-                        raise ValueError("最多可保存 50 个账户")
-                    account_id = db.execute("INSERT INTO accounts(name,api_key,enabled,created_at) VALUES (?,?,?,?)",
-                                            (name.strip(), key, int(enabled), time.time())).lastrowid
+                    account_id = self._insert_account(db, name, key, enabled)
             except sqlite3.IntegrityError:
                 raise ValueError("这个 Key 已经添加过了") from None
         return account_id
@@ -213,7 +255,7 @@ class Store:
             for row in db.execute("SELECT * FROM accounts ORDER BY id"):
                 item = dict(row)
                 key = item.pop("api_key")
-                item["key_mask"] = "•••• " + (key[-4:] if len(key) > 8 else "••••")
+                item["key_mask"] = masked_key(key)
                 item["enabled"] = bool(item["enabled"])
                 accounts.append(item)
             return {"accounts": accounts,

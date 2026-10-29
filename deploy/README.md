@@ -42,6 +42,49 @@ ssh -L 18787:127.0.0.1:8787 root@你的服务器IP
 不要将 `.env` 或数据目录放到网站静态目录。镜像只包含 Python 和前端源码，账户数据单独保存在 Docker 数据卷。
 程序本身不读取 `.env`；Compose 读取其中可选的环境配置。
 
+## 不打开网站，直接通过 API 添加 Key
+
+接口为 `POST /api/keys`，使用单独的「收 Key 令牌」。在服务器项目目录执行下列命令，
+把 `填写你的NutrientKey` 替换成实际 Key 即可；不需要先设置网页管理员密码：
+
+```bash
+KEY_IMPORT_TOKEN="$(docker compose exec -T nutrient2api python -m nutrient2api key-import-token)"
+curl --fail-with-body http://127.0.0.1:8787/api/keys \
+  -H "Authorization: Bearer $KEY_IMPORT_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"name":"第二账户","api_key":"填写你的NutrientKey"}'
+unset KEY_IMPORT_TOKEN
+```
+
+在其他电脑或自动化脚本中调用时，把地址替换为 `https://你的域名/api/keys`，使用服务器命令取出的收 Key 令牌。
+客户端聊天令牌和后台 Cookie 无法调用此接口；收 Key 令牌仅用于添加 Key。
+凭据只放在 Authorization 请求头和 JSON 正文，接口不接受 URL 查询参数。
+
+`api_key` 必填，`name` 可省略（自动生成账户名称），`enabled` 可选且默认为 `true`。
+每次提交一个 Key，保存后立即参与轮询。新 Key 返回 HTTP 201，例如：
+
+```json
+{"id":2,"name":"第二账户","key_mask":"•••• 1234","enabled":true,"created":true}
+```
+
+同一个 Key 重复提交返回 HTTP 200 和 `created:false`，保留原账户的名称、启停状态、冷却状态和统计，不重复添加。
+响应只显示掩码，保存不代表已通过上游权限或余额验证，也不会主动发起上游调用。
+最多保存 50 个账户，请求体限制 16 KiB；不支持批量数组和额外字段。
+
+更换收 Key 令牌（旧令牌立即失效，无需重启）：
+
+```bash
+docker compose exec -T nutrient2api python -m nutrient2api rotate-key-import-token
+```
+
+直接取得用于聊天客户端的访问令牌，也不用打开网站：
+
+```bash
+docker compose exec -T nutrient2api python -m nutrient2api client-token
+```
+
+这些命令的输出是凭据，请妥善保存。收 Key 令牌随数据卷持久化，升级时自动补齐，不覆盖已有账户和客户端令牌。
+
 ## 启动并检查
 
 需要 Docker Engine 和 Docker Compose。进入项目目录执行：
@@ -151,7 +194,7 @@ docker compose cp nutrient2api:/app/data/backup.db "./backups/control-$(date +%F
 chmod 600 backups/*.db
 ```
 
-数据库包含明文上游 Key 和访问令牌，依靠目录权限保护，不是加密保险库。请保护备份，勿上传公开仓库。
+数据库包含明文上游 Key、客户端访问令牌和收 Key 令牌，依靠目录权限保护，不是加密保险库。请保护备份，勿上传公开仓库。
 管理员密码仅保存 PBKDF2 哈希。调用记录最多保留 200 条，记录账户、模型、状态和耗时，不记录提问或回复。
 一次请求切换账户时，每次上游尝试分别计数；检测不计入调用统计。
 
@@ -212,6 +255,7 @@ python -B tests/test_prompt.py
 python -B tests/test_stream_scrub.py
 python -B -m unittest discover -s tests -p 'test_regression.py' -v
 python -B -m unittest discover -s tests -p 'test_admin.py' -v
+python -B -m unittest discover -s tests -p 'test_key_receive.py' -v
 ```
 
 `tests/test_live.py`、`tests/test_http.py` 和 `tests/test_policy_live.py` 使用真实上游，可能产生费用。

@@ -62,6 +62,66 @@ generation endpoints return 503 while the admin console and health check stay av
 
 For Docker, run `docker compose up -d --build` and find the setup code using
 `docker compose logs nutrient2api`. An `.env` file is optional.
+For a command-line-only setup, use the key intake API below; browser initialization
+is optional for that workflow.
+
+## Submit keys by API
+
+`POST /api/keys` receives one Nutrient key per request. It uses a separate **key
+import token**, obtainable from the server terminal. This token only authorizes
+key intake; client API tokens and browser cookies cannot authorize this endpoint.
+No browser login, setup code, or CSRF token is needed.
+
+Run these commands in the project directory on the server after updating:
+
+```bash
+KEY_IMPORT_TOKEN="$(docker compose exec -T nutrient2api python -m nutrient2api key-import-token)"
+curl --fail-with-body http://127.0.0.1:8787/api/keys \
+  -H "Authorization: Bearer $KEY_IMPORT_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"api_key":"YOUR_NUTRIENT_KEY","name":"Second account"}'
+unset KEY_IMPORT_TOKEN
+```
+
+Use your HTTPS domain instead of loopback when calling from another machine.
+Send credentials in the header and JSON body; URL parameters are rejected.
+
+| JSON field | Required | Meaning |
+|---|---|---|
+| `api_key` | yes | Nutrient key with AI Gateway access; no whitespace |
+| `name` | no | Account name, 1–80 characters; defaults to `API 账户 <id>` |
+| `enabled` | no | Boolean; defaults to `true` |
+
+A new key returns HTTP 201:
+
+```json
+{"id":2,"name":"Second account","key_mask":"•••• 1234","enabled":true,"created":true}
+```
+
+Resubmitting the same key returns HTTP 200 with the existing account and
+`created:false`. It preserves the existing name, enabled state, cooldown and
+statistics, including accounts previously added through the web UI. Concurrent
+retries are safe. Newly enabled keys are immediately available for round-robin
+selection and survive restarts. Intake saves the key without testing it upstream;
+the response does not prove the key is valid or has quota. Responses only show a mask.
+
+Invalid input returns 400, an invalid/missing import token returns 401, and bodies
+larger than 16 KiB return 413. The limit remains 50 accounts. Batch arrays and
+unknown fields are rejected; submit each key separately.
+
+Get or rotate the import token, or retrieve the existing client token without a browser:
+
+```bash
+docker compose exec -T nutrient2api python -m nutrient2api key-import-token
+docker compose exec -T nutrient2api python -m nutrient2api rotate-key-import-token
+docker compose exec -T nutrient2api python -m nutrient2api client-token
+```
+
+Rotation immediately revokes the previous import token without restarting; it
+leaves accounts, browser passwords and the client token unchanged. These commands
+print secrets, so keep the output private. For native Python, omit the
+`docker compose exec -T nutrient2api` prefix and use the same data directory as
+the running server. Existing databases gain an import token automatically on upgrade.
 
 ## Web administration and multiple accounts
 
@@ -80,15 +140,15 @@ For Docker, run `docker compose up -d --build` and find the setup code using
   expire after eight hours and on server restart.
 
 SQLite data lives in `./data` for native Python (`NUTRIENT2API_DATA_DIR` overrides
-it) or the `nutrient2api_data` named volume in Compose. It contains upstream keys
-and the client token in plaintext, protected by filesystem permissions, and a
+it) or the `nutrient2api_data` named volume in Compose. It contains upstream keys,
+the client token and the key import token in plaintext, protected by filesystem permissions, and a
 PBKDF2 hash of the administrator password. Protect the volume and its backups.
 The directory is excluded from Git and Docker builds. Do not run `docker compose
 down -v` unless you intend to delete this data.
 
 Existing `NUTRIENT_API_KEY` and `NUTRIENT2API_TOKEN` environment variables are
-imported **once**, when the database is created. After that, the web console is
-authoritative; changing these environment variables will not overwrite saved values.
+imported **once**, when the database is created. After that, the persisted account
+configuration is authoritative; changing these environment variables will not overwrite saved values.
 Other environment settings, such as the upstream URL, still apply on restart.
 
 To recover a forgotten admin password, run `python -m nutrient2api reset-admin`
@@ -131,6 +191,7 @@ curl -X POST http://127.0.0.1:8787/v1/chat/completions \
 | POST | `/v1/embeddings` | supports `dimensions` (<= 1536) |
 | GET | `/health` | liveness |
 | GET | `/admin/` | web console; password session separate from API token |
+| POST | `/api/keys` | receive a key; separate import token; idempotent by key |
 
 `/models`, `/chat/completions` and `/embeddings` work without the `/v1` prefix too.
 `/v1/responses` is not exposed. Models, chat and embeddings always require
@@ -246,6 +307,7 @@ python tests/test_prompt.py       # prompt policy, offline
 python tests/test_stream_scrub.py # streaming scrub, offline
 python -m unittest discover -s tests -p 'test_regression.py' -v # loopback HTTP, offline
 python -m unittest discover -s tests -p 'test_admin.py' -v # admin and multiple accounts, offline
+python -m unittest discover -s tests -p 'test_key_receive.py' -v # headless key intake, offline
 python -m nutrient2api &          # then
 python tests/test_http.py         # full HTTP surface, live calls
 python tests/test_policy_live.py  # policy behaviour, live calls

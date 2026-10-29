@@ -44,7 +44,7 @@ class Config:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "nutrient2api/1.1"
+    server_version = "nutrient2api/1.2"
     protocol_version = "HTTP/1.1"
 
     # -- plumbing ---------------------------------------------------------
@@ -57,6 +57,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         sys.stderr.write("%s %s\n" % (time.strftime("%H:%M:%S"), fmt % args))
 
+    def log_request(self, code="-", size="-") -> None:
+        if urlparse(getattr(self, "path", "")).path.rstrip("/") == "/api/keys":
+            # Even mistakenly supplied URL parameters must not reach access logs.
+            self.log_message('"%s /api/keys %s" %s %s', self.command, self.request_version, code, size)
+        else:
+            super().log_request(code, size)
+
     def _send_json(self, status: int, payload: Any) -> None:
         # In particular, never reuse a connection whose rejected body is unread.
         self.close_connection = True
@@ -65,7 +72,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(blob)))
         self.send_header("Connection", "close")
-        if urlparse(self.path).path.startswith("/admin"):
+        path = urlparse(self.path).path.rstrip("/")
+        if path.startswith("/admin") or path == "/api/keys":
             security_headers(self)
         else:
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -75,10 +83,10 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, status: int, message: str, kind: str = "invalid_request_error") -> None:
         self._send_json(status, {"error": {"message": message, "type": kind, "code": None}})
 
-    def _authorized(self) -> bool:
+    def _authorized(self, token_setting="client_token") -> bool:
         header = self.headers.get("Authorization", "")
         token = header[7:].strip() if header.lower().startswith("bearer ") else ""
-        expected = self.server.store.setting("client_token")
+        expected = self.server.store.setting(token_setting)
         return bool(expected) and secrets.compare_digest(token.encode(), expected.encode())
 
     def _read_json(self, max_bytes=None) -> Optional[Dict[str, Any]]:
@@ -124,7 +132,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- verbs ------------------------------------------------------------
     def do_OPTIONS(self) -> None:
-        if urlparse(self.path).path.startswith("/admin"):
+        path = urlparse(self.path).path.rstrip("/")
+        if path.startswith("/admin") or path == "/api/keys":
             self._error(405, "method not allowed")
             return
         self.send_response(204)
@@ -136,6 +145,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/keys":
+            self._error(405, "use POST with a JSON body")
+            return
         if path == "/":
             self.send_response(302)
             self.send_header("Location", "/admin/")
@@ -160,6 +172,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self.close_connection = True
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/keys":
+            self._handle_key_receive()
+            return
         if path.startswith("/admin/"):
             self._handle_admin(path)
             return
@@ -221,6 +236,27 @@ class Handler(BaseHTTPRequestHandler):
             self._error(500, "internal proxy error", "api_error")
 
     # -- handlers ---------------------------------------------------------
+    def _handle_key_receive(self):
+        if not self._authorized("key_import_token"):
+            self._error(401, "invalid key import token", "authentication_error")
+            return
+        if urlparse(self.path).query:
+            self._error(400, "send credentials in the Authorization header and JSON body, not URL parameters")
+            return
+        body = self._read_json(max_bytes=16384)
+        if body is None:
+            return
+        try:
+            result = self.server.store.receive_key(body)
+            self._send_json(201 if result["created"] else 200, result)
+        except ValueError as exc:
+            self._error(400, str(exc))
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:
+            self.log_message("key import failure: %s", type(exc).__name__)
+            self._error(500, "unable to save key", "api_error")
+
     def _handle_admin(self, path):
         try:
             self.server.admin.handle(self, path)
