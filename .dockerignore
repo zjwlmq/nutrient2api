@@ -1,0 +1,4 @@
+*
+!nutrient2api/
+!nutrient2api/*.py
+!Dockerfile

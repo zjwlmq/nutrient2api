@@ -1,0 +1,29 @@
+services:
+  nutrient2api:
+    build: .
+    image: nutrient2api:local
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      NUTRIENT_API_KEY: ${NUTRIENT_API_KEY:?Fill NUTRIENT_API_KEY in .env}
+      NUTRIENT2API_TOKEN: ${NUTRIENT2API_TOKEN:?Fill NUTRIENT2API_TOKEN in .env}
+      NUTRIENT2API_HOST: 0.0.0.0
+      NUTRIENT2API_PORT: "8787"
+    ports:
+      - "127.0.0.1:${NUTRIENT2API_PUBLISH_PORT:-8787}:8787"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 1.0
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

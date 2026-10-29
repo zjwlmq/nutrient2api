@@ -1,0 +1,7 @@
+import os
+import sys
+
+from .server import serve
+
+if __name__ == "__main__":
+    serve()

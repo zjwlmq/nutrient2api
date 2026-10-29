@@ -1,0 +1,11 @@
+# Copy to compose.override.yaml in the project root only if your reverse proxy
+# uses a bridge network. Set PROXY_NETWORK to its existing Docker network name.
+services:
+  nutrient2api:
+    networks:
+      - panel_proxy
+
+networks:
+  panel_proxy:
+    external: true
+    name: ${PROXY_NETWORK:?Set the existing reverse proxy Docker network name}
