@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import threading
+import tempfile
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
@@ -90,6 +91,8 @@ class HTTPRegression(unittest.TestCase):
         self.env = patch.dict(os.environ, {"NUTRIENT2API_QUIET": "1"}, clear=True)
         self.env.start()
         self.cfg = server.Config()
+        self.data_dir = tempfile.TemporaryDirectory()
+        self.cfg.data_dir = self.data_dir.name
         self.cfg.api_key = "offline-upstream-key"
         self.cfg.client_token = "offline-client-token"
         self.cfg.max_connections = 1
@@ -115,6 +118,7 @@ class HTTPRegression(unittest.TestCase):
         for worker in self.threads:
             worker.join(3)
         self.env.stop()
+        self.data_dir.cleanup()
 
     def request(self, path="/v1/chat/completions", payload=None, method="POST", auth=True, raw=None, headers=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.proxy.server_port, timeout=4)
@@ -349,10 +353,13 @@ class ConversionRegression(unittest.TestCase):
                         upstream._request("http://127.0.0.1", "offline-key", {"messages": []})
                     self.assertEqual(raised.exception.status, 502)
 
-    def test_public_bind_requires_token_before_listening(self):
-        with patch.dict(os.environ, {"NUTRIENT_API_KEY": "offline-key", "NUTRIENT2API_HOST": "0.0.0.0"}, clear=True):
-            with self.assertRaisesRegex(SystemExit, "NUTRIENT2API_TOKEN"):
-                server.serve()
+    def test_empty_config_creates_protected_bootstrap_and_client_token(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"NUTRIENT2API_DATA_DIR": directory}, clear=True):
+            cfg = server.Config()
+            with server.ProxyHTTPServer(("127.0.0.1", 0), cfg) as httpd:
+                self.assertGreater(len(httpd.store.setting("setup_code")), 24)
+                self.assertGreater(len(cfg.client_token), 32)
+                self.assertEqual(httpd.store.dashboard()["accounts"], [])
 
 
 if __name__ == "__main__":

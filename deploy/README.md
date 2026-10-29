@@ -4,27 +4,43 @@
 服务默认只发布到宿主机 `127.0.0.1:8787`。公网仅开放 HTTPS 和证书签发所需端口。
 该部署适合受控的小规模使用；服务仍基于 Python 标准库 HTTP 服务器。
 
-## 准备项目和密钥
+## 无密钥启动
 
-将整个项目上传到服务器，例如 `/opt/nutrient2api`，在该目录执行：
+现在可以先部署，进入网页后台后再添加 Key。没有 `.env` 或其中的密钥留空都可以启动。
+首次部署：
 
 ```bash
-cp .env.example .env
-chmod 600 .env
-openssl rand -hex 32
-nano .env
+git clone https://github.com/zjwlmq/nutrient2api.git
+cd nutrient2api
+docker compose up -d --build
+docker compose logs --tail=100 nutrient2api
 ```
 
-填写两个必需值：
+已克隆到 `/root/nutrient2api` 的服务器，先退出 nano（Ctrl+X），再执行：
 
-```dotenv
-NUTRIENT_API_KEY=填写具备_AI_Gateway_权限的_Nutrient_密钥
-NUTRIENT2API_TOKEN=填写上一步生成的随机字符串
+```bash
+cd /root/nutrient2api
+git pull --ff-only
+docker compose up -d --build
+docker compose logs --tail=100 nutrient2api
 ```
 
-Nutrient 密钥用于连接上游；随机访问令牌用于你的客户端连接本服务，两者不同。
-不要把 `.env` 放到网站静态目录。Docker 构建只复制 Python 源码，密钥不会进入镜像。
-程序本身不自动读取 `.env`；本方案由 Compose 注入环境变量。
+确认 `git pull` 成功后再构建。日志中会显示 `INITIAL SETUP CODE: ...`，保存冒号后面的初始化码。
+这个码用于首次设置管理员密码，初始化完成后立即失效；它不是 Nutrient Key。
+也可执行 `docker compose exec nutrient2api python -m nutrient2api setup-code` 查看尚未使用的初始化码。
+
+按下文配置 HTTPS 反向代理后，打开 `https://你的域名/admin/`，输入初始化码，设置至少 12 个字符的管理员密码。
+随后可以添加「主账户」「备用账户」等多个 Nutrient Key，也可以先留空。没有可用账户时，聊天和嵌入接口返回 503，后台仍可使用。
+
+尚未配置域名时，可从自己电脑执行 SSH 转发，再访问电脑上的 `http://127.0.0.1:18787/admin/`：
+
+```bash
+ssh -L 18787:127.0.0.1:8787 root@你的服务器IP
+```
+
+电脑上的 `127.0.0.1` 默认指向电脑自身，只有建立上述 SSH 转发后才能通过它访问服务器。
+不要将 `.env` 或数据目录放到网站静态目录。镜像只包含 Python 和前端源码，账户数据单独保存在 Docker 数据卷。
+程序本身不读取 `.env`；Compose 读取其中可选的环境配置。
 
 ## 启动并检查
 
@@ -40,15 +56,20 @@ curl --fail http://127.0.0.1:8787/health
 
 健康检查只证明本地进程存活，不检查上游密钥、余额或模型权限。
 如 8787 已被占用，在 `.env` 设置 `NUTRIENT2API_PUBLISH_PORT=其他空闲端口`，并同步修改反向代理目标。
-修改 `.env` 后执行 `docker compose up -d --force-recreate`；单独 restart 不会重新注入环境变量。
+修改端口等 `.env` 配置后执行 `docker compose up -d --force-recreate`；单独 restart 不会重新注入环境变量。
+上游 Key 和客户端令牌在网页中保存后立即生效，无需重启。
 
 ## 面板和域名
 
 1. 将域名的 DNS 记录指向服务器。
 2. 在现有面板创建反向代理网站，绑定域名，申请并启用 HTTPS。
-3. 若面板代理运行在宿主机上，目标填写 `http://127.0.0.1:8787`，保留原请求路径和 Authorization 请求头。
+3. 若面板代理运行在宿主机上，目标填写 `http://127.0.0.1:8787`，代理整个站点（包括 `/admin/`），保留原路径、Host、Cookie 和 Authorization 请求头。
 4. 关闭响应缓冲与缓存，设置上游读取空闲超时为 360 秒。保留请求缓冲，以便传给 Python 的请求带有 Content-Length。
 5. 设置请求体上限 10 MiB、读取超时及访问频率限制。独立 Nginx 的完整模板见 [nginx.conf.example](nginx.conf.example)。
+
+代理必须用实际协议覆盖 `X-Forwarded-Proto`（Nginx：`proxy_set_header X-Forwarded-Proto $scheme;`），
+使 HTTPS 后台登录 Cookie 带上 Secure。不要为后台接口添加跨域允许头，不要缓存后台响应。
+后台包含 HttpOnly/SameSite Cookie、CSRF 校验和登录频率限制；公网访问仍应使用 HTTPS。
 
 Nginx 模板中的 `limit_req_zone` 和 `limit_conn_zone` 必须放在 `http` 级别。
 若面板已经生成 `server` 配置，不要再粘贴一套重复的 server/listen/证书配置；将对应代理设置合入现有站点。
@@ -71,10 +92,17 @@ Nginx 缓冲与超时行为见 [官方说明](https://nginx.org/en/docs/http/ngx
 
 ## 客户端配置与验收
 
+在后台「账户管理」中添加每个账户的 Key。名称仅用于区分账户；Key 需要上游开通 AI Gateway 权限。
+「检测」只读取上游模型列表，不发起生成，也不证明账户余额或每个模型可用。
+保存后列表仅显示 Key 末四位；编辑时留空表示保留原 Key。
+
+启用的账户按轮询调度。401/403 冷却 5 分钟，429 冷却 1 分钟，并在尚未输出首个事件时尝试其他账户。
+网络超时、5xx 和已经开始的流式回复不自动重放。禁用或删除账户会阻止新的调度，不中断已在进行的请求。
+
 客户端选择 Chat Completions 兼容接口：
 
 - Base URL：`https://你的域名/v1`
-- API Key：`.env` 中的 `NUTRIENT2API_TOKEN`
+- API Key：后台「连接你的客户端」中点击「复制令牌」得到的值
 - 模型：例如 `gpt-6-luna`，或网关别名 `nutrient-s`
 
 本服务没有提供 `/v1/responses` 路由。需要 Responses 接口的客户端不能仅靠更换 Base URL 接入。
@@ -109,14 +137,42 @@ docker compose logs -f --tail=100 nutrient2api
 docker compose restart nutrient2api
 ```
 
-更新前备份项目源代码和 `.env`，并保留旧镜像。更新代码后执行 `docker compose up -d --build`。
-需要回退时，恢复旧代码并重建。服务没有本地业务数据库。
+账户、客户端令牌、管理员密码哈希及调用统计保存在 `nutrient2api_data` 命名数据卷，容器路径是 `/app/data/control.db`。
+`git pull`、重建、重启和普通 `docker compose down` 会保留数据；**不要执行 `docker compose down -v`**，该命令会删除数据卷。
+保持原项目目录和 Compose 项目名，避免意外创建一个空的新数据卷。
+
+更新前备份数据库、`.env` 和旧镜像。可用 SQLite 在线备份，再复制到宿主机：
+
+```bash
+mkdir -p backups
+chmod 700 backups
+docker compose exec -T nutrient2api python -c "import sqlite3; src=sqlite3.connect('/app/data/control.db'); dst=sqlite3.connect('/app/data/backup.db'); src.backup(dst); dst.close(); src.close()"
+docker compose cp nutrient2api:/app/data/backup.db "./backups/control-$(date +%F-%H%M%S).db"
+chmod 600 backups/*.db
+```
+
+数据库包含明文上游 Key 和访问令牌，依靠目录权限保护，不是加密保险库。请保护备份，勿上传公开仓库。
+管理员密码仅保存 PBKDF2 哈希。调用记录最多保留 200 条，记录账户、模型、状态和耗时，不记录提问或回复。
+一次请求切换账户时，每次上游尝试分别计数；检测不计入调用统计。
+
+从旧版升级时，已有 `.env` 中的 `NUTRIENT_API_KEY` 和 `NUTRIENT2API_TOKEN` 只在首次创建数据库时导入。
+之后以网页保存的配置为准，修改 `.env` 不会覆盖这些值。首次没填 Key 也没关系，稍后直接在网页添加。
+所有 API 请求现在都必须带客户端令牌，包括本机调用；初始化会自动生成令牌。
+
+忘记管理员密码时执行：
+
+```bash
+docker compose exec nutrient2api python -m nutrient2api reset-admin
+```
+
+刷新 `/admin/`，用输出的新初始化码重新设置密码。账户、调用记录和客户端令牌会保留；旧登录会话失效。
+正常登录有效期为 8 小时，服务重启后需要重新登录。
 默认限制为 32 个活动连接、10 MiB 请求体、30 秒客户端套接字空闲超时，以及 256 MiB 容器内存。
 容器日志轮转为 3 个 10 MiB 文件。大图片、长上下文或更高并发需要按实测调整请求体和内存限制。
 
 遇到工具与推理参数冲突时，服务会调用 Responses 获取完整结果，再封装为 SSE；这条回退路径会推迟首个内容事件。
 上游断流会作为 SSE error 返回，客户端应检查错误事件，不能只检查 HTTP 200。
-非流式上游 HTTP 429/5xx 会有限重试并退避；生成请求遇到网络超时不会自动重发，以减少重复执行。
+仅明确的 401/403/429 拒绝会切换账户；生成请求遇到网络超时或 5xx 不自动重发。
 Compose 的环境变量和容器限制配置见 [Docker 官方说明](https://docs.docker.com/reference/compose-file/services/)。
 
 ## 通过 GitHub 更新
@@ -129,7 +185,7 @@ git clone https://github.com/zjwlmq/nutrient2api.git
 cd nutrient2api
 ```
 
-然后按前文配置 `.env` 并启动。
+然后按前文启动，在网页后台填写 Key。
 若之前使用 ZIP 部署，应先备份 `.env`，将仓库克隆到新目录，再复制 `.env` 并按原端口和反向代理配置切换。
 
 以后进入服务器上的仓库目录，执行：
@@ -143,7 +199,7 @@ docker compose logs --tail=100 nutrient2api
 ```
 
 确认 `git pull` 成功后再执行后续构建命令；发生本地修改冲突时先保留修改并处理冲突。
-`.env` 已加入 Git 忽略规则，正常拉取更新不会覆盖密钥。
+`.env`、本机 `data/` 和数据库文件已加入 Git 忽略规则，正常拉取更新不会覆盖密钥。
 服务器专用的网络配置可保存在 `compose.override.yaml`；建议将该文件加入服务器上的 `.git/info/exclude`，避免误提交。
 面板中的站点和证书配置独立于此仓库。
 
@@ -155,6 +211,7 @@ docker compose logs --tail=100 nutrient2api
 python -B tests/test_prompt.py
 python -B tests/test_stream_scrub.py
 python -B -m unittest discover -s tests -p 'test_regression.py' -v
+python -B -m unittest discover -s tests -p 'test_admin.py' -v
 ```
 
 `tests/test_live.py`、`tests/test_http.py` 和 `tests/test_policy_live.py` 使用真实上游，可能产生费用。

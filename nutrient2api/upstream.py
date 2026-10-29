@@ -105,6 +105,7 @@ def chat(
     body: Dict[str, Any],
     base_url: str = DEFAULT_BASE,
     policy: Optional[Any] = None,
+    retries: int = 3,
 ) -> Dict[str, Any]:
     """POST /chat/completions, falling back to /responses for tool+reasoning."""
     payload = dict(body)
@@ -115,11 +116,11 @@ def chat(
         payload.setdefault("max_completion_tokens", payload.pop("max_tokens"))
 
     try:
-        result = _request(f"{base_url}/chat/completions", api_key, payload)
+        result = _request(f"{base_url}/chat/completions", api_key, payload, retries=retries)
     except UpstreamError as exc:
         if not _is_tool_reasoning_conflict(exc.payload):
             raise
-        result = _via_responses(api_key, model, payload, base_url)
+        result = _via_responses(api_key, model, payload, base_url, retries=retries)
     return _scrub_result(result, policy)
 
 
@@ -140,7 +141,7 @@ def _scrub_result(result: Dict[str, Any], policy: Optional[Any]) -> Dict[str, An
 
 
 def _via_responses(
-    api_key: str, model: str, payload: Dict[str, Any], base_url: str
+    api_key: str, model: str, payload: Dict[str, Any], base_url: str, retries: int = 3
 ) -> Dict[str, Any]:
     """Translate a Chat Completions request into a Responses request."""
     if payload.get("n", 1) != 1:
@@ -180,7 +181,7 @@ def _via_responses(
     if effort:
         resp_req["reasoning"] = {"effort": effort}
 
-    result = _request(f"{base_url}/responses", api_key, resp_req)
+    result = _request(f"{base_url}/responses", api_key, resp_req, retries=retries)
     return _responses_to_chat(result, model)
 
 
@@ -336,6 +337,7 @@ def chat_stream(
     body: Dict[str, Any],
     base_url: str = DEFAULT_BASE,
     policy: Optional[Any] = None,
+    retries: int = 3,
 ) -> Iterator[str]:
     """Yield complete SSE events; buffer only the tool/reasoning fallback."""
     payload = dict(body)
@@ -359,7 +361,7 @@ def chat_stream(
             error = _decode(exc.read())
         if not _is_tool_reasoning_conflict(error):
             raise UpstreamError(exc.code, error)
-        result = _scrub_result(_via_responses(api_key, model, payload, base_url), policy)
+        result = _scrub_result(_via_responses(api_key, model, payload, base_url, retries=retries), policy)
         yield from _completed_stream(result, payload)
         return
     except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
@@ -371,6 +373,14 @@ def chat_stream(
             raise UpstreamError(502, {"error": {"message": "upstream did not return an event stream"}})
         try:
             for event in _sse_events(resp):
+                data = event_data(event)
+                if data and data != "[DONE]":
+                    try:
+                        value = json.loads(data)
+                    except ValueError:
+                        value = None
+                    if isinstance(value, dict) and value.get("error"):
+                        raise UpstreamError(502, value)
                 if scrubber is not None:
                     yield from scrubber.process(event, model)
                 else:
@@ -537,11 +547,11 @@ def _synthetic_chunk(model: str, text: str) -> str:
 
 
 def embeddings(
-    api_key: str, model: str, body: Dict[str, Any], base_url: str = DEFAULT_BASE
+    api_key: str, model: str, body: Dict[str, Any], base_url: str = DEFAULT_BASE, retries: int = 3
 ) -> Dict[str, Any]:
     payload = dict(body)
     payload["model"] = model
-    result = _request(f"{base_url}/embeddings", api_key, payload)
+    result = _request(f"{base_url}/embeddings", api_key, payload, retries=retries)
     if isinstance(result, dict):
         result["model"] = body.get("model") or model
     return result

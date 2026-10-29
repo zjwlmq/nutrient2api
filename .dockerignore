@@ -1,4 +1,8 @@
 *
 !nutrient2api/
 !nutrient2api/*.py
+!nutrient2api/static/
+!nutrient2api/static/*.html
+!nutrient2api/static/*.css
+!nutrient2api/static/*.js
 !Dockerfile

@@ -13,7 +13,10 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from . import catalog, upstream
+from .admin import Admin, security_headers
+from .pool import AccountPool
 from .prompt import PromptPolicy
+from .storage import Store
 
 ROUTES = {
     "/v1/chat/completions": "chat",
@@ -29,8 +32,9 @@ class Config:
         self.base_url = os.environ.get("NUTRIENT_BASE_URL", upstream.DEFAULT_BASE).rstrip("/")
         self.host = os.environ.get("NUTRIENT2API_HOST", "127.0.0.1")
         self.port = int(os.environ.get("NUTRIENT2API_PORT", "8787"))
-        # Optional: require callers to present this token instead of none.
+        # Legacy env values are imported once into persistent storage.
         self.client_token = os.environ.get("NUTRIENT2API_TOKEN", "").strip()
+        self.data_dir = os.environ.get("NUTRIENT2API_DATA_DIR", "./data")
         self.max_body_bytes = int(os.environ.get("NUTRIENT2API_MAX_BODY_BYTES", "10485760"))
         self.client_timeout = float(os.environ.get("NUTRIENT2API_CLIENT_TIMEOUT", "30"))
         self.max_connections = int(os.environ.get("NUTRIENT2API_MAX_CONNECTIONS", "32"))
@@ -40,7 +44,7 @@ class Config:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "nutrient2api/1.0"
+    server_version = "nutrient2api/1.1"
     protocol_version = "HTTP/1.1"
 
     # -- plumbing ---------------------------------------------------------
@@ -61,7 +65,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(blob)))
         self.send_header("Connection", "close")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        if urlparse(self.path).path.startswith("/admin"):
+            security_headers(self)
+        else:
+            self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(blob)
 
@@ -69,14 +76,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(status, {"error": {"message": message, "type": kind, "code": None}})
 
     def _authorized(self) -> bool:
-        cfg: Config = self.server.cfg  # type: ignore[attr-defined]
-        if not cfg.client_token:
-            return True
         header = self.headers.get("Authorization", "")
         token = header[7:].strip() if header.lower().startswith("bearer ") else ""
-        return secrets.compare_digest(token.encode(), cfg.client_token.encode())
+        expected = self.server.store.setting("client_token")
+        return bool(expected) and secrets.compare_digest(token.encode(), expected.encode())
 
-    def _read_json(self) -> Optional[Dict[str, Any]]:
+    def _read_json(self, max_bytes=None) -> Optional[Dict[str, Any]]:
         cfg: Config = self.server.cfg  # type: ignore[attr-defined]
         lengths = self.headers.get_all("Content-Length") or []
         if self.headers.get("Transfer-Encoding"):
@@ -93,7 +98,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._error(400, "invalid Content-Length")
             return None
-        if length > cfg.max_body_bytes:
+        if length > min(cfg.max_body_bytes, max_bytes or cfg.max_body_bytes):
             self._error(413, "request body exceeds configured size limit")
             return None
         if self.headers.get_content_type() != "application/json":
@@ -119,6 +124,9 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- verbs ------------------------------------------------------------
     def do_OPTIONS(self) -> None:
+        if urlparse(self.path).path.startswith("/admin"):
+            self._error(405, "method not allowed")
+            return
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "*")
@@ -128,6 +136,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/":
+            self.send_response(302)
+            self.send_header("Location", "/admin/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if path == "/admin" or path.startswith("/admin/"):
+            self._handle_admin(path)
+            return
         if path in ("/health", "/healthz"):
             cfg: Config = self.server.cfg  # type: ignore[attr-defined]
             self._send_json(200, {"status": "ok", "upstream": cfg.base_url})
@@ -143,6 +160,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self.close_connection = True
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if path.startswith("/admin/"):
+            self._handle_admin(path)
+            return
         action = ROUTES.get(path)
         if not action:
             self._error(404, f"unknown path {path}", "not_found")
@@ -152,10 +172,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         cfg: Config = self.server.cfg  # type: ignore[attr-defined]
-        if not cfg.api_key:
-            self._error(500, "NUTRIENT_API_KEY not set", "configuration_error")
-            return
-
         body = self._read_json()
         if body is None:
             return
@@ -205,6 +221,15 @@ class Handler(BaseHTTPRequestHandler):
             self._error(500, "internal proxy error", "api_error")
 
     # -- handlers ---------------------------------------------------------
+    def _handle_admin(self, path):
+        try:
+            self.server.admin.handle(self, path)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:
+            self.log_message("admin failure: %s", type(exc).__name__)
+            self._error(500, "管理后台暂时不可用，请查看服务日志")
+
     def _handle_models(self) -> None:
         data = [
             {
@@ -223,12 +248,14 @@ class Handler(BaseHTTPRequestHandler):
         if body.get("stream"):
             self._stream_chat(cfg, target, body)
             return
-        result = upstream.chat(cfg.api_key, target.upstream, body, cfg.base_url, cfg.policy)
+        result = self.server.pool.call(target.id, lambda key: upstream.chat(
+            key, target.upstream, body, cfg.base_url, cfg.policy, retries=0))
         result["model"] = target.id
         self._send_json(200, result)
 
     def _stream_chat(self, cfg: Config, target: "catalog.Model", body: Dict[str, Any]) -> None:
-        events = upstream.chat_stream(cfg.api_key, target.upstream, body, cfg.base_url, cfg.policy)
+        events = self.server.pool.stream(target.id, lambda key: upstream.chat_stream(
+            key, target.upstream, body, cfg.base_url, cfg.policy, retries=0))
         started = False
         try:
             # Open upstream and obtain a complete event before committing HTTP 200.
@@ -271,7 +298,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def _handle_embeddings(self, cfg: Config, target: "catalog.Model", body: Dict[str, Any]) -> None:
-        result = upstream.embeddings(cfg.api_key, target.upstream, body, cfg.base_url)
+        result = self.server.pool.call(target.id, lambda key: upstream.embeddings(
+            key, target.upstream, body, cfg.base_url, retries=0))
         if isinstance(result, dict):
             result["model"] = target.id
         self._send_json(200, result)
@@ -297,6 +325,10 @@ class ProxyHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, address: Any, cfg: Config) -> None:
         self.cfg = cfg
+        self.store = Store(cfg.data_dir, cfg.api_key, cfg.client_token)
+        cfg.client_token = self.store.setting("client_token")
+        self.admin = Admin(self.store, cfg)
+        self.pool = AccountPool(self.store)
         self._slots = threading.BoundedSemaphore(cfg.max_connections)
         super().__init__(address, Handler)
 
@@ -308,6 +340,16 @@ class ProxyHTTPServer(ThreadingHTTPServer):
                     b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n"
                     b"Retry-After: 1\r\nConnection: close\r\n\r\n"
                 )
+                # A close with unread bytes can reset the socket before the
+                # client receives 503. Half-close, then drain a bounded amount.
+                request.shutdown(socket.SHUT_WR)
+                request.settimeout(0.05)
+                remaining = 8192
+                while remaining:
+                    data = request.recv(min(4096, remaining))
+                    if not data:
+                        break
+                    remaining -= len(data)
             except OSError:
                 pass
             finally:
@@ -328,11 +370,6 @@ class ProxyHTTPServer(ThreadingHTTPServer):
 
 def serve(cfg: Optional[Config] = None) -> None:
     cfg = cfg or Config()
-    if not cfg.api_key:
-        raise SystemExit("NUTRIENT_API_KEY is required")
-    if cfg.host not in ("127.0.0.1", "localhost", "::1") and not cfg.client_token:
-        raise SystemExit("NUTRIENT2API_TOKEN is required when listening outside localhost")
-
     with ProxyHTTPServer((cfg.host, cfg.port), cfg) as httpd:
         previous = None
         if threading.current_thread() is threading.main_thread():
@@ -341,6 +378,11 @@ def serve(cfg: Optional[Config] = None) -> None:
                 lambda *_: threading.Thread(target=httpd.shutdown, daemon=True).start(),
             )
         print(f"nutrient2api listening on http://{cfg.host}:{cfg.port}/v1  -> {cfg.base_url}", flush=True)
+        print("Admin console: /admin/", flush=True)
+        setup_code = httpd.store.setting("setup_code")
+        if setup_code:
+            print("INITIAL SETUP CODE: " + setup_code, flush=True)
+            print("Open /admin/ and use this one-time code to create your administrator password.", flush=True)
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

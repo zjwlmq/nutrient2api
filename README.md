@@ -9,8 +9,9 @@ dependencies.
 
 For server installation with Docker, an existing panel, and HTTPS, see the
 [Linux deployment guide](deploy/README.md). The included Compose configuration
-requires an upstream key and a separate client token, and publishes only on
-the host's loopback address.
+publishes only on the host's loopback address. Start without any keys, then open
+**`/admin/`** to initialize the Chinese web console and manage multiple Nutrient
+accounts. No Node.js or frontend build is needed.
 
 ## Why a wrapper is needed at all
 
@@ -44,25 +45,67 @@ keeps working.
 ## Run
 
 ```bash
-pip install -r requirements.txt   # nothing to install, kept for clarity
-export NUTRIENT_API_KEY=pdf_live_xxx    # PowerShell: $env:NUTRIENT_API_KEY="pdf_live_xxx"
 python -m nutrient2api
 ```
 
 ```
 nutrient2api listening on http://127.0.0.1:8787/v1
+Admin console: /admin/
+INITIAL SETUP CODE: <one-time code>
 ```
+
+Open `http://127.0.0.1:8787/admin/`, enter the one-time code from the terminal,
+and set an administrator password (at least 12 characters). Add upstream keys
+now or later. Copy the **client token** from the console into your API client.
+Requests require that token even on localhost. Without any available account,
+generation endpoints return 503 while the admin console and health check stay available.
+
+For Docker, run `docker compose up -d --build` and find the setup code using
+`docker compose logs nutrient2api`. An `.env` file is optional.
+
+## Web administration and multiple accounts
+
+- Add, rename, replace, disable, test, or delete up to 50 Nutrient keys.
+- Keys are masked after saving. The connection test only requests the upstream
+  model list; it does not generate a completion or verify generation quota.
+- Enabled accounts rotate in round-robin order. HTTP 401/403 triggers a five-minute
+  cooldown, and 429 triggers a one-minute cooldown. Only these explicit rejections
+  permit failover, and only before the first stream event. Network failures, 5xx,
+  and interrupted streams are not replayed across accounts.
+- Recent history retains 200 upstream attempts, including failover attempts, with
+  account, model, status and duration. Aggregate counts persist; prompts and replies
+  are not stored by this proxy. Probes do not count as model requests.
+- Rotate the client token or change the administrator password in Access Settings.
+  Password changes and resets invalidate existing admin sessions. Sessions also
+  expire after eight hours and on server restart.
+
+SQLite data lives in `./data` for native Python (`NUTRIENT2API_DATA_DIR` overrides
+it) or the `nutrient2api_data` named volume in Compose. It contains upstream keys
+and the client token in plaintext, protected by filesystem permissions, and a
+PBKDF2 hash of the administrator password. Protect the volume and its backups.
+The directory is excluded from Git and Docker builds. Do not run `docker compose
+down -v` unless you intend to delete this data.
+
+Existing `NUTRIENT_API_KEY` and `NUTRIENT2API_TOKEN` environment variables are
+imported **once**, when the database is created. After that, the web console is
+authoritative; changing these environment variables will not overwrite saved values.
+Other environment settings, such as the upstream URL, still apply on restart.
+
+To recover a forgotten admin password, run `python -m nutrient2api reset-admin`
+(Docker: `docker compose exec nutrient2api python -m nutrient2api reset-admin`),
+then reopen `/admin/` and initialize with the new code. Accounts, history and the
+client token remain intact. `setup-code` prints an existing unused setup code.
 
 ## Use
 
-An OpenAI Chat Completions client, pointed at the local base URL. These examples
-assume localhost with no client token configured. For deployment, set the client's
-API key to `NUTRIENT2API_TOKEN` and use your HTTPS base URL:
+An OpenAI Chat Completions client, pointed at your base URL. Set `PROXY_TOKEN` to
+the client token copied from the console. For deployment, use your HTTPS base URL:
 
 ```python
 from openai import OpenAI
+import os
 
-client = OpenAI(api_key="unused", base_url="http://127.0.0.1:8787/v1")
+client = OpenAI(api_key=os.environ["PROXY_TOKEN"], base_url="http://127.0.0.1:8787/v1")
 
 r = client.chat.completions.create(
     model="gpt-6-luna",
@@ -72,8 +115,9 @@ print(r.choices[0].message.content)
 ```
 
 ```bash
-curl http://127.0.0.1:8787/v1/models
+curl -H "Authorization: Bearer $PROXY_TOKEN" http://127.0.0.1:8787/v1/models
 curl -X POST http://127.0.0.1:8787/v1/chat/completions \
+  -H "Authorization: Bearer $PROXY_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"model":"gpt-6-luna","messages":[{"role":"user","content":"hi"}]}'
 ```
@@ -86,12 +130,13 @@ curl -X POST http://127.0.0.1:8787/v1/chat/completions \
 | POST | `/v1/chat/completions` | streaming via `"stream": true` |
 | POST | `/v1/embeddings` | supports `dimensions` (<= 1536) |
 | GET | `/health` | liveness |
+| GET | `/admin/` | web console; password session separate from API token |
 
 `/models`, `/chat/completions` and `/embeddings` work without the `/v1` prefix too.
-`/v1/responses` is not exposed. When `NUTRIENT2API_TOKEN` is set, models, chat,
-and embeddings require `Authorization: Bearer <token>`; health remains public.
-The process refuses non-loopback binding without a token. It does not load `.env`
-itself: Docker Compose or your service manager must inject the environment.
+`/v1/responses` is not exposed. Models, chat and embeddings always require
+`Authorization: Bearer <token>`; health remains public. A random token is generated
+if none was supplied for the first start. The process does not load `.env` itself:
+Docker Compose or your service manager must inject the environment.
 
 ## Upstream quirks this handles
 
@@ -200,6 +245,7 @@ python tests/test_live.py         # transport layer, live calls
 python tests/test_prompt.py       # prompt policy, offline
 python tests/test_stream_scrub.py # streaming scrub, offline
 python -m unittest discover -s tests -p 'test_regression.py' -v # loopback HTTP, offline
+python -m unittest discover -s tests -p 'test_admin.py' -v # admin and multiple accounts, offline
 python -m nutrient2api &          # then
 python tests/test_http.py         # full HTTP surface, live calls
 python tests/test_policy_live.py  # policy behaviour, live calls
@@ -223,9 +269,9 @@ timeout, and 32 concurrent accepted connections. Configure these with
 inbound chunked request bodies are rejected. Excess connections receive 503.
 Keep a reverse proxy in front for TLS, rate limiting and request buffering.
 
-Non-streaming upstream HTTP 429/5xx responses have bounded retries with backoff.
-Generation requests are not replayed on transport timeouts. Streaming requests
-are never automatically restarted after output has been sent.
+The HTTP service retries only explicit 401/403/429 rejections using another
+available account. Generation requests are not replayed on transport timeouts or
+5xx errors. Streams are never automatically restarted after output has been sent.
 
 ## Notes
 
