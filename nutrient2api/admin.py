@@ -16,6 +16,7 @@ from . import upstream
 STATIC = Path(__file__).with_name("static")
 ASSETS = {"/admin": ("admin.html", "text/html; charset=utf-8"),
           "/admin/admin.css": ("admin.css", "text/css; charset=utf-8"),
+          "/admin/docs.js": ("docs.js", "text/javascript; charset=utf-8"),
           "/admin/admin.js": ("admin.js", "text/javascript; charset=utf-8")}
 
 
@@ -170,6 +171,8 @@ class Admin:
                 send(200, {"ok": True}, "")
             elif path == "/admin/api/client-token":
                 send(200, {"token": self.store.setting("client_token")})
+            elif path == "/admin/api/key-import-token":
+                send(200, {"token": self.store.setting("key_import_token")})
             elif path == "/admin/api/rotate-token":
                 if body.get("confirm") is not True:
                     raise ValueError("请确认更换访问令牌")

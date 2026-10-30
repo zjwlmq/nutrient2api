@@ -1153,3 +1153,387 @@ dialog::backdrop {
     scroll-behavior:auto!important;
   }
 }
+
+/* In-console API reference. Examples remain selectable and scroll independently. */
+.docs-page {
+  max-width:1120px;
+  min-width:0;
+}
+
+.docs-badge {
+  color:#3d5ba8;
+  background:#f0f4ff;
+  border:1px solid #dfe7fc;
+  border-radius:6px;
+  padding:6px 11px;
+  font-size:12px;
+  white-space:nowrap;
+}
+
+.docs-connect {
+  padding:24px;
+}
+
+.docs-connect-heading {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px 20px;
+  margin-bottom:20px;
+}
+
+.docs-connect-heading p,.docs-token-actions small {
+  color:var(--muted);
+  font-size:12px;
+}
+
+.docs-token-actions {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:12px;
+  margin-top:20px;
+}
+
+.docs-credentials {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:16px;
+  margin:24px 0 30px;
+}
+
+.docs-credentials>div {
+  padding:18px 20px;
+  background:#f8f9fc;
+  border:1px solid #edf0f5;
+  border-radius:8px;
+}
+
+.docs-credentials span {
+  color:#66758e;
+  font-size:11px;
+  letter-spacing:.3px;
+}
+
+.docs-credentials h3 {
+  margin:5px 0;
+  font-size:15px;
+}
+
+.docs-credentials p,.docs-section-intro p,.docs-caption,.docs-note p,.docs-command>p,.docs-errors p {
+  color:#667085;
+  font-size:13px;
+  line-height:1.85;
+}
+
+.docs-topics {
+  display:flex;
+  flex-wrap:wrap;
+  gap:0 26px;
+  border-bottom:1px solid var(--border);
+  margin-bottom:20px;
+}
+
+.docs-topics button {
+  border-bottom:2px solid transparent;
+  padding:12px 2px;
+  color:#667085;
+  font-weight:550;
+}
+
+.docs-topics button[aria-pressed=true] {
+  color:var(--blue);
+  border-bottom-color:var(--blue);
+}
+
+.docs-language-bar {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:25px;
+}
+
+.docs-languages {
+  display:flex;
+  flex-wrap:wrap;
+  gap:3px;
+  padding:3px;
+  border-radius:6px;
+  background:#f0f2f6;
+}
+
+.docs-languages button {
+  padding:6px 11px;
+  border-radius:4px;
+  font-size:12px;
+  color:#667085;
+}
+
+.docs-languages button[aria-pressed=true] {
+  color:#233454;
+  background:#fff;
+  box-shadow:0 1px 3px #172b4d15;
+}
+
+.docs-language-bar>p {
+  font-size:12px;
+  color:var(--muted);
+}
+
+.docs-section-intro {
+  margin-bottom:20px;
+}
+
+.docs-section-intro h2 {
+  margin-bottom:6px;
+}
+
+.docs-code-card {
+  border:1px solid #dfe5ef;
+  border-radius:8px;
+  overflow:hidden;
+  min-width:0;
+  margin-bottom:18px;
+}
+
+.docs-code-heading {
+  padding:16px 20px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  border-bottom:1px solid var(--border);
+}
+
+.docs-code-heading>div {
+  min-width:0;
+}
+
+.docs-code-heading h3 {
+  font-size:15px;
+  margin-bottom:5px;
+}
+
+.docs-code-heading code {
+  color:#667085;
+  font-size:12px;
+  overflow-wrap:anywhere;
+}
+
+.docs-code-heading .secondary,.docs-command .secondary {
+  font-size:12px;
+  min-height:36px;
+  padding:7px 11px;
+  flex:none;
+}
+
+.docs-method {
+  color:#315efb;
+  background:#edf2ff;
+  padding:2px 5px;
+  border-radius:4px;
+  font-size:10px;
+  font-weight:650;
+}
+
+.docs-page pre {
+  margin:0;
+  padding:20px;
+  color:#263a56;
+  background:#f7f9fc;
+  overflow:auto;
+  max-height:420px;
+  font-size:12px;
+  line-height:1.85;
+  tab-size:2;
+}
+
+.docs-page code,.field textarea {
+  font-family:Consolas,"SFMono-Regular",Menlo,monospace;
+}
+
+.docs-page pre:focus-visible,.docs-command summary:focus-visible,.field textarea:focus-visible {
+  outline:3px solid #b6c6ff;
+  outline-offset:-3px;
+}
+
+.docs-fields {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:18px;
+  margin:24px 0;
+}
+
+.docs-fields dt {
+  font-family:Consolas,monospace;
+  font-size:13px;
+  font-weight:600;
+  margin-bottom:7px;
+}
+
+.docs-fields dt span {
+  font-family:inherit;
+  color:#8390a3;
+  font-size:11px;
+  font-weight:400;
+}
+
+.docs-fields dd {
+  margin:0;
+  color:#667085;
+  font-size:12px;
+  line-height:1.85;
+}
+
+.docs-note {
+  background:#f3f6ff;
+  border-left:3px solid #9bb2fb;
+  border-radius:0 7px 7px 0;
+  padding:16px 20px;
+  margin:22px 0;
+  overflow-wrap:anywhere;
+}
+
+.docs-note strong {
+  display:block;
+  margin-bottom:5px;
+  font-size:13px;
+}
+
+.docs-note p+p {
+  margin-top:7px;
+}
+
+.docs-caption {
+  margin:-4px 0 26px;
+}
+
+.docs-commands {
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:0 20px;
+}
+
+.docs-command+.docs-command {
+  border-top:1px solid var(--border);
+}
+
+.docs-command summary {
+  cursor:pointer;
+  padding:16px 0;
+  font-weight:550;
+}
+
+.docs-command>p {
+  margin-bottom:12px;
+}
+
+.docs-command-code {
+  padding-bottom:20px;
+}
+
+.docs-command pre {
+  border-radius:6px;
+  margin-bottom:10px;
+}
+
+.docs-subheading {
+  font-size:16px;
+  margin:30px 0 14px;
+}
+
+.docs-errors>div {
+  display:grid;
+  grid-template-columns:80px minmax(0,1fr);
+  gap:12px;
+  padding:14px 0;
+  border-bottom:1px solid var(--border);
+}
+
+.docs-errors>div>code {
+  font-size:12px;
+  color:#4f6491;
+  padding-top:2px;
+}
+
+.docs-errors h4 {
+  margin:0 0 3px;
+  font-size:13px;
+  font-weight:550;
+}
+
+.field textarea {
+  width:100%;
+  border:1px solid #d8dee8;
+  border-radius:6px;
+  padding:12px;
+  font-size:12px;
+  line-height:1.7;
+  resize:vertical;
+  white-space:pre;
+}
+
+@media(max-width:760px) {
+  .docs-badge {
+    display:none;
+  }
+  .docs-connect {
+    padding:20px;
+  }
+  .docs-credentials {
+    grid-template-columns:1fr;
+    gap:10px;
+  }
+  .docs-credentials>div {
+    padding:14px 18px;
+  }
+  .docs-topics {
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:0 12px;
+  }
+  .docs-topics button {
+    font-size:13px;
+  }
+  .docs-code-heading {
+    padding:14px;
+  }
+  .docs-code-heading .secondary svg {
+    display:none;
+  }
+  .docs-page pre {
+    padding:16px;
+  }
+  .docs-fields {
+    grid-template-columns:1fr;
+    gap:14px;
+  }
+  .docs-languages button {
+    padding:6px 8px;
+    font-size:11px;
+  }
+  .docs-token-actions .primary,.docs-token-actions .secondary {
+    flex:1;
+    padding:9px 10px;
+    font-size:12px;
+  }
+  .docs-token-actions svg {
+    width:16px;
+    height:16px;
+  }
+  .docs-token-actions small {
+    width:100%;
+  }
+  .nav button {
+    min-width:0;
+  }
+}
+
+@media(max-width:520px) {
+  .nav svg {
+    display:none;
+  }
+}

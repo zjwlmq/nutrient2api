@@ -111,13 +111,34 @@ class AdminHTTP(unittest.TestCase):
         status, data, _ = self.request("/admin/api/status", auth=False)
         self.assertTrue(data["setup_required"])
         self.assertIsNone(data["csrf"])
-        for path in ("/admin/", "/admin/admin.css", "/admin/admin.js"):
+        for path in ("/admin/", "/admin/admin.css", "/admin/docs.js", "/admin/admin.js"):
             status, raw, headers = self.request(path, auth=False, raw=True)
             self.assertEqual(status, 200)
             self.assertGreater(len(raw), 100)
             self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
             self.assertNotIn("Access-Control-Allow-Origin", headers)
         self.assertEqual(self.request("/admin/../storage.py", raw=True)[0], 404)
+
+    def test_docs_import_token_requires_admin_session_csrf_and_same_origin(self):
+        path = "/admin/api/key-import-token"
+        self.assertEqual(self.request(path, {}, auth=False)[0], 401)
+        self.setup_admin()
+        self.assertEqual(self.request(path, {}, auth=False,
+                                      headers={"Authorization": "Bearer " + self.cfg.client_token})[0], 401)
+        self.assertEqual(self.request(path, {}, {"X-CSRF-Token": ""})[0], 403)
+        self.assertEqual(self.request(path, {}, {"Origin": "https://evil.example"})[0], 403)
+        self.assertEqual(self.request(path)[0], 404)
+        status, result, headers = self.request(path, {})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["token"], self.store.setting("key_import_token"))
+        self.assertNotEqual(result["token"], self.cfg.client_token)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertNotIn("Access-Control-Allow-Origin", headers)
+        self.assertNotIn(result["token"], json.dumps(self.request("/admin/api/state")[1]))
+        rotated = self.store.rotate_key_import_token()
+        self.assertEqual(self.request(path, {})[1]["token"], rotated)
+        self.request("/admin/api/logout", {})
+        self.assertEqual(self.request(path, {})[0], 401)
 
     def test_setup_requires_code_and_is_one_time(self):
         code = self.store.setting("setup_code")

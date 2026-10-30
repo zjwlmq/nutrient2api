@@ -2,10 +2,12 @@
 
 const $ = (s, root = document) => root.querySelector(s);
 const app = $("#app"), modal = $("#modal"), toastBox = $("#toast");
-let csrf = null, state = null, page = "accounts", search = "", toastTimer;
+const currentPage = () => ["accounts", "logs", "settings", "docs"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "accounts";
+let csrf = null, state = null, page = currentPage(), search = "", toastTimer;
 const paths = {
   key: '<circle cx="15" cy="8" r="5"/><path d="m11 12-8 8v2h4v-3h3v-3l3-3"/><path d="M16 7h.01"/>',
   logs: '<path d="M14 2H5v20h14V7zM14 2v6h5M8 12h8M8 16h6M8 8h2"/>',
+  book: '<path d="M12 5v16M12 5C9 2 5 2 2 3v16c3-1 7-1 10 2 3-3 7-3 10-2V3c-3-1-7-1-10 2z"/>',
   settings: '<path d="m9 3 1-2h4l1 2 3 2 2 1-1 4v4l1 4-2 1-3 2-1 2h-4l-1-2-3-2-2-1 1-4v-4L4 6l2-1z"/><circle cx="12" cy="12" r="3"/>',
   user: '<circle cx="12" cy="7" r="4"/><path d="M4 22v-3a8 8 0 0 1 16 0v3"/>',
   exit: '<path d="M9 3H3v18h6M9 12h12m-4-4 4 4-4 4"/>',
@@ -70,13 +72,13 @@ function showAuth(setup) {
     <h1>${setup ? "初始化管理后台" : "欢迎回来"}</h1>
     <p class="intro">${setup ? "先设置管理员密码，Nutrient Key 可以稍后添加。" : "输入管理员密码，管理你的账户和 API。"}</p>
     <form id="auth-form">
-      ${setup ? '<div class="field"><label for="setup-code">初始化码</label><input id="setup-code" name="code" required maxlength="256" autocomplete="off" spellcheck="false"><small>在服务器启动日志中找到 INITIAL SETUP CODE。</small></div>' : ""}
+      ${setup ? '<div class="field"><label for="setup-code">初始化码</label><input id="setup-code" name="code" required maxlength="256" autocomplete="off" spellcheck="false"><small>在服务器执行下方命令获取，仅用于首次设置管理员密码。</small></div>' : ""}
       <div class="field"><label for="password">${setup ? "设置管理员密码" : "管理员密码"}</label><input id="password" name="password" type="password" required ${setup ? 'minlength="12"' : ''} maxlength="256" autocomplete="${setup ? "new-password" : "current-password"}">${setup ? '<small>至少 12 个字符，请妥善保存。</small>' : ""}</div>
       ${setup ? '<div class="field"><label for="confirm-password">确认密码</label><input id="confirm-password" name="confirm" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></div>' : ""}
       <p class="form-error" id="auth-error" role="alert" hidden></p>
       <button class="primary full" type="submit">${setup ? "创建管理员并进入" : "登录控制台"}</button>
     </form>
-    <p class="auth-footer">${setup ? '查看初始化码：<br><code>docker compose logs nutrient2api</code>' : '忘记密码？在服务器执行：<br><code>docker compose exec nutrient2api python -m nutrient2api reset-admin</code><br>然后刷新页面，用新的初始化码重新设置。'}</p>
+    <p class="auth-footer">${setup ? '查看初始化码（在服务器终端执行）：<br><code>cd ~/nutrient2api &amp;&amp; docker compose exec -T nutrient2api python -m nutrient2api setup-code</code>' : '忘记密码？在服务器项目目录执行：<br><code>docker compose exec -T nutrient2api python -m nutrient2api reset-admin</code><br>然后刷新页面，用新的初始化码重新设置。'}</p>
   </section></main>`;
   const form = $("#auth-form");
   form.addEventListener("submit", event => {
@@ -98,12 +100,11 @@ async function openConsole() {
     <button data-page="accounts">${icon("key")}账户管理</button>
     <button data-page="logs">${icon("logs")}调用记录</button>
     <button data-page="settings">${icon("settings")}访问设置</button>
+    <button data-page="docs">${icon("book")}API 文档</button>
   </nav><div class="sidebar-foot"><div class="admin-label">${icon("user")}管理员</div><button id="logout" aria-label="退出登录">${icon("exit")}退出登录</button></div></aside>
   <main class="workspace" id="content"></main>`;
   document.querySelectorAll("[data-page]").forEach(button => button.addEventListener("click", () => {
-    page = button.dataset.page;
-    render();
-    refresh().catch(error => toast(error.message, true));
+    location.hash = button.dataset.page;
   }));
   $("#logout").addEventListener("click", event => busy(event.currentTarget, async () => {
     await api("logout", {});
@@ -115,7 +116,7 @@ async function openConsole() {
 
 async function refresh() {
   state = await api("state");
-  if (csrf && $("#content")) render();
+  if (csrf && $("#content") && page !== "docs") render();
 }
 
 function accountStatus(account) {
@@ -130,7 +131,7 @@ function connection() {
   return `<section class="panel connection"><h2>连接你的客户端</h2>
     <div class="connection-row"><label for="base-url">Base URL</label><div class="copy-field"><input id="base-url" readonly value="${esc(location.origin + "/v1")}"><button id="copy-url" aria-label="复制 Base URL">${icon("copy")}</button></div></div>
     <div class="connection-row"><label for="client-token">API Key</label><div class="copy-field"><input id="client-token" readonly type="password" value="hidden-client-token"><button id="copy-token">复制令牌</button></div></div>
-    <p>客户端使用访问令牌，上游 Key 仅用于连接 Nutrient。</p></section>`;
+    <p>客户端使用访问令牌，上游 Key 仅用于连接 Nutrient。<a href="#docs">查看 API 文档与调用示例</a></p></section>`;
 }
 
 function bindConnection() {
@@ -146,6 +147,7 @@ function render() {
   });
   if (page === "logs") return renderLogs();
   if (page === "settings") return renderSettings();
+  if (page === "docs") return renderDocs();
   const ready = state.accounts.filter(a => a.enabled && a.cooldown_until <= Date.now() / 1000).length;
   const success = state.total_requests ? Number((100 * state.total_successes / state.total_requests).toFixed(1)) + "%" : "—";
   $("#content").innerHTML = `<header class="page-heading"><div><h1>账户管理</h1><p class="subtitle">集中管理你的 Nutrient 账户和 API Key。</p></div><button class="primary" id="add-account">${icon("plus")}添加账户</button></header>
@@ -220,7 +222,10 @@ function confirmAction(title, description, label, action) {
 async function copy(value, label) {
   try { await navigator.clipboard.writeText(value); toast(label + "已复制"); }
   catch {
-    showModal("复制" + label, `<p class="modal-intro">当前浏览器不允许自动复制。请选中下面的内容，手动复制。</p><div class="field"><input id="manual-copy" readonly value="${esc(value)}" aria-label="${esc(label)}"></div><button class="primary full" id="copy-done">完成</button>`);
+    const field = value.includes("\n")
+      ? `<textarea id="manual-copy" class="mono" readonly rows="10" aria-label="${esc(label)}">${esc(value)}</textarea>`
+      : `<input id="manual-copy" readonly value="${esc(value)}" aria-label="${esc(label)}">`;
+    showModal("复制" + label, `<p class="modal-intro">当前浏览器不允许自动复制。请选中下面的内容，手动复制。</p><div class="field">${field}</div><button class="primary full" id="copy-done">完成</button>`);
     $("#manual-copy").select();
     $("#copy-done").addEventListener("click", () => modal.close());
   }
@@ -261,8 +266,15 @@ function renderSettings() {
 }
 
 modal.addEventListener("close", () => { modal.innerHTML = ""; });
+window.addEventListener("hashchange", () => {
+  page = currentPage();
+  if (csrf && $("#content")) {
+    render();
+    if (page !== "docs") refresh().catch(error => toast(error.message, true));
+  }
+});
 setInterval(() => {
-  if (csrf && !document.hidden && !modal.open && page !== "settings" && !["INPUT", "BUTTON"].includes(document.activeElement?.tagName)) {
+  if (csrf && !document.hidden && !modal.open && !["settings", "docs"].includes(page) && !["INPUT", "BUTTON"].includes(document.activeElement?.tagName)) {
     refresh().catch(() => {});
   }
 }, 20000);
