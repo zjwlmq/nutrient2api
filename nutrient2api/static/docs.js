@@ -96,8 +96,9 @@ function docsContent() {
       ${docsCommand("update", "更新服务器程序", "先拉取 GitHub 更新，再重建并等待容器健康。账号和令牌保存在 Docker 数据卷；不要执行 docker compose down -v，它会删除数据卷。")}
     </div>
     <h3 class="docs-subheading">常见返回码</h3><div class="docs-errors">
-      ${[["400", "请求格式不正确", "检查 JSON、字段名称及模型是否适合当前接口；导入接口只接受 api_key、name、enabled。"], ["401", "令牌不正确", "上传 Key 使用导入令牌；聊天、模型、嵌入使用访问令牌。请求头必须是 Authorization: Bearer 令牌。"], ["403", "权限不足", "检查账号是否有上游 AI Gateway 权限；后台操作则可能需要重新登录。"], ["413", "请求体太大", "Key 导入接口上限 16 KiB，聊天和嵌入请求默认上限 10 MiB。"], ["429", "请求受限", "稍后再试，并在账户管理中查看账号冷却状态。"], ["503", "暂时没有可用账号", "添加有效 Key、启用账号，或等待处于冷却中的账号恢复。"], ["502 / 504", "上游异常或超时", "查看调用记录，并检查上游可用性与服务器网络。"]].map(([code,title,description]) => `<div><code>${code}</code><section><h4>${title}</h4><p>${description}</p></section></div>`).join("")}
-    </div><div class="docs-note"><strong>健康检查通过，为什么还不能聊天？</strong><p><code>GET /health</code> 不需要令牌，只检查程序是否运行，不检查账号 Key、权限或余额。导入有效 Key 后，还需要完成一次真实调用。</p></div>`;
+      ${[["400", "请求格式不正确", "检查 JSON、字段名称及模型是否适合当前接口；导入接口只接受 api_key、name、enabled。"], ["401", "令牌不正确", "上传 Key 使用导入令牌；聊天、模型、嵌入使用访问令牌。请求头必须是 Authorization: Bearer 令牌。"], ["402", "上游计费受限", "payg_not_configured 表示该 Key 所属的 Nutrient 组织尚未配置按量付费。请在该组织的 AI Gateway 页面检查可用额度、计费设置和支出上限；开通按量付费可能产生实际费用。同一组织内的多个 Key 共享组织的计费设置。"], ["403", "权限不足", "检查账号是否有上游 AI Gateway 权限；后台操作则可能需要重新登录。"], ["413", "请求体太大", "Key 导入接口上限 16 KiB，聊天和嵌入请求默认上限 10 MiB。"], ["429", "请求受限", "稍后再试，并在账户管理中查看账号冷却状态。"], ["503", "暂时没有可用账号", "添加有可用额度的 Key、启用账号，或等待冷却中的账号恢复；仍有计费问题的账号需要先处理上游计费。"], ["502 / 504", "上游异常或超时", "查看调用记录，并检查上游可用性与服务器网络。"]].map(([code,title,description]) => `<div><code>${code}</code><section><h4>${title}</h4><p>${description}</p></section></div>`).join("")}
+    </div><div class="docs-note"><strong>账号显示“计费受限”后会怎样？</strong><p>收到上游 HTTP 402 后，该账号冷却 5 分钟。请求尚未开始输出时，会尝试池中其他可用账号；如果都不可用，仍会返回错误。已经开始的流式回复不切换账号。</p><p>模型列表检测成功只验证连通性，会保留已有的 402 计费标记和冷却时间。后台会根据后续实际模型调用的结果更新账号状态；更换账号 Key 时重置状态。</p></div>
+    <div class="docs-note"><strong>健康检查通过，为什么还不能聊天？</strong><p><code>GET /health</code> 不需要令牌，只检查程序是否运行，不检查账号 Key、权限或余额。导入有效 Key 后，还需要完成一次真实调用。</p></div>`;
 }
 
 function renderDocsBody() {

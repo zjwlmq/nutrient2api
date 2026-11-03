@@ -3,6 +3,7 @@
 import time
 
 from . import upstream
+from .storage import REJECTION_COOLDOWNS
 
 
 class AccountPool:
@@ -35,7 +36,7 @@ class AccountPool:
                 return result
             except upstream.UpstreamError as exc:
                 status, last = exc.status, exc
-                if status not in (401, 403, 429):
+                if status not in REJECTION_COOLDOWNS:
                     raise
             finally:
                 self.store.record(account, model, status, int((time.monotonic() - start) * 1000))
@@ -61,7 +62,7 @@ class AccountPool:
                 raise
             except upstream.UpstreamError as exc:
                 status, last = exc.status, exc
-                if started or status not in (401, 403, 429):
+                if started or status not in REJECTION_COOLDOWNS:
                     raise
             finally:
                 events.close()

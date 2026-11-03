@@ -10,6 +10,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
+REJECTION_COOLDOWNS = {401: 300, 402: 300, 403: 300, 429: 60}
+
+
 def password_hash(password):
     salt = secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 600000).hex()
@@ -234,8 +237,15 @@ class Store:
 
     def record(self, account, model, status, duration_ms, streaming=False, probe=False):
         now = time.time()
-        cooldown = now + (60 if status == 429 else 300) if status in (401, 403, 429) else 0
+        delay = REJECTION_COOLDOWNS.get(status, 0)
+        cooldown = now + delay if delay else 0
         with self.transaction() as db:
+            if probe and status == 200:
+                # Reading /models does not verify that model calls can be billed.
+                current = db.execute("SELECT last_status FROM accounts WHERE id=? AND api_key=?",
+                                     (account["id"], account["api_key"])).fetchone()
+                if current and current["last_status"] == 402:
+                    return
             # A slow request for a replaced key must not change the new key's health.
             db.execute("UPDATE accounts SET last_status=?,last_checked=?,cooldown_until=? WHERE id=? AND api_key=?",
                        (status, now, cooldown, account["id"], account["api_key"]))

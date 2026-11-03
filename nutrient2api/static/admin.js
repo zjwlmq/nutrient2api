@@ -121,6 +121,7 @@ async function refresh() {
 
 function accountStatus(account) {
   if (!account.enabled) return ['disabled', '已停用'];
+  if (account.last_status === 402) return ['bad', '计费受限'];
   if (account.cooldown_until > Date.now() / 1000) return ['cooldown', account.last_status === 429 ? '限流冷却' : '认证异常'];
   if (account.last_status === 200) return ['good', '连接正常'];
   if (account.last_status) return ['bad', '检测异常'];
@@ -154,7 +155,7 @@ function render() {
     <section class="stats" aria-label="调用概览">${[["账户总数",state.accounts.length],["参与调度",ready],["累计调用",number(state.total_requests)],["成功率",success]].map(([label,value])=>`<div class="stat"><div class="stat-label">${label}</div><div class="stat-value">${value}</div></div>`).join("")}</section>
     <section class="panel"><div class="panel-heading"><h2>账户列表</h2><label class="search">${icon("search")}<input id="search" aria-label="搜索账户" placeholder="搜索账户" value="${esc(search)}"></label></div>
       <div class="table-wrap"><table class="account-table"><thead><tr><th>账户名称</th><th>API Key</th><th>状态</th><th>调用次数</th><th>操作</th></tr></thead><tbody id="accounts-body"></tbody></table></div>
-      <p class="note">新添加的账户会参与轮询。认证失败或限流时，会在输出开始前尝试其他账户。</p></section>${connection()}`;
+      <p class="note">新添加的账户会参与轮询。认证失败、计费受限或限流时，会在输出开始前尝试其他账户。</p></section>${connection()}`;
   $("#add-account").addEventListener("click", () => editAccount());
   $("#search").addEventListener("input", event => { search = event.target.value; renderAccounts(); });
   renderAccounts(); bindConnection();
@@ -165,7 +166,7 @@ function renderAccounts() {
   $("#accounts-body").innerHTML = accounts.length ? accounts.map(account => {
     const [kind, label] = accountStatus(account);
     return `<tr><td class="name" title="${esc(account.name)}">${esc(account.name)}</td><td class="key-mask">${esc(account.key_mask)}</td>
-      <td class="account-status"><span class="badge ${kind}" title="最近检测或调用：${esc(stamp(account.last_checked))}${account.last_status ? " · HTTP " + account.last_status : ""}">${label}</span></td><td class="request-count">${number(account.requests)}</td>
+      <td class="account-status"><span class="badge ${kind}" title="最近检测或调用：${esc(stamp(account.last_checked))}${account.last_status ? " · HTTP " + account.last_status : ""}${account.last_status === 402 ? " · 请检查 Nutrient 组织的 AI Gateway 计费设置和可用额度；模型列表检测不验证计费。" : ""}">${label}</span></td><td class="request-count">${number(account.requests)}</td>
       <td class="action-cell"><div class="actions"><button class="link-button" data-test="${account.id}" aria-label="检测${esc(account.name)}">检测</button><button class="link-button" data-edit="${account.id}" aria-label="编辑${esc(account.name)}">编辑</button><button class="switch" role="switch" aria-checked="${account.enabled}" aria-label="启用${esc(account.name)}" data-toggle="${account.id}"></button></div></td></tr>`;
   }).join("") : `<tr><td colspan="5" class="empty"><strong>${search ? "没有找到匹配的账户" : "添加你的第一个账户"}</strong>${search ? "试试其他名称。" : "现在没有 Key 也没关系，准备好后随时回来添加。"}${search ? "" : '<br><button class="secondary" id="empty-add">添加账户</button>'}</td></tr>`;
   $("#empty-add")?.addEventListener("click", () => editAccount());

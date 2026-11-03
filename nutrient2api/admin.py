@@ -204,7 +204,8 @@ class Admin:
                         status = exc.status
                     self.store.record(account, "models", status, 0, probe=True)
                     # Do not return an arbitrary upstream payload that may echo a key.
-                    messages = {200: "连接成功，可读取模型列表", 401: "Key 无效，请检查后重新填写",
+                    messages = {200: "模型列表连接成功；此检测不验证计费或可用额度", 401: "Key 无效，请检查后重新填写",
+                                402: "上游计费受限，请检查该 Nutrient 组织的 AI Gateway 额度和按量付费设置",
                                 403: "账户没有访问权限，请确认已开通 AI Gateway", 429: "上游限流，稍后重试",
                                 504: "连接超时，请检查服务器网络"}
                     send(200, {"ok": status == 200, "status": status, "message": messages.get(status, "上游返回错误（HTTP %s）" % status)})

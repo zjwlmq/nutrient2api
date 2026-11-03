@@ -11,9 +11,14 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
-from nutrient2api import server
+from nutrient2api import server, upstream
 from nutrient2api.storage import Store
 from test_regression import MockGateway, completion_chunk, parse_sse
+
+
+PAYG_ERROR = {"error": {"code": "payg_not_configured",
+                        "message": "Pay-as-you-go is not configured for this organization.",
+                        "param": None, "type": "insufficient_quota"}}
 
 
 class AccountGateway(MockGateway):
@@ -33,7 +38,7 @@ class AccountGateway(MockGateway):
 
     def do_GET(self):
         key = self.key()
-        status = self.server.statuses.get(key, 200)
+        status = getattr(self.server, "probe_statuses", self.server.statuses).get(key, 200)
         # Deliberately malicious error payload: must not be echoed by the probe.
         self.reply(status, {"data": []} if status == 200 else {"error": {"message": key}})
 
@@ -42,7 +47,7 @@ class AccountGateway(MockGateway):
         status = self.server.statuses.get(key, 200)
         if status != 200:
             self.rfile.read(int(self.headers["Content-Length"]))
-            self.reply(status, {"error": {"message": "rejected"}})
+            self.reply(status, PAYG_ERROR if status == 402 else {"error": {"message": "rejected"}})
         else:
             super().do_POST()
 
@@ -268,21 +273,98 @@ class AdminHTTP(unittest.TestCase):
         self.assertEqual(len(data["requests"]), 5)
 
     def test_rejection_failover_for_chat_stream_and_embeddings(self):
-        for code, streaming, embeddings in ((401, False, False), (429, True, False), (403, False, True)):
-            with self.subTest(code=code):
+        for code in (401, 402, 403, 429):
+            for streaming, embeddings in ((False, False), (True, False), (False, True)):
+                with self.subTest(code=code, streaming=streaming, embeddings=embeddings):
+                    for item in self.store.dashboard()["accounts"]:
+                        self.store.delete_account(item["id"])
+                    self.gateway.calls.clear()
+                    bad = self.add("异常账户", "offline-bad")
+                    self.add("可用账户", "offline-good")
+                    self.gateway.statuses["offline-bad"] = code
+                    body = {"model": "text-embedding-3-small", "input": "hello"} if embeddings else dict(self.payload, stream=streaming)
+                    status, data, _ = self.request("/v1/embeddings" if embeddings else "/v1/chat/completions", body, raw=streaming)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(self.gateway.calls, [("POST", "offline-bad"), ("POST", "offline-good")])
+                    failed = self.store.account(bad)
+                    self.assertEqual(failed["last_status"], code)
+                    self.assertGreater(failed["cooldown_until"], time.time())
+                    if streaming:
+                        self.assertEqual(parse_sse(data)[-1], "[DONE]")
+
+    def test_all_billing_rejections_preserve_error_without_duplicate_attempts(self):
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
                 for item in self.store.dashboard()["accounts"]:
                     self.store.delete_account(item["id"])
                 self.gateway.calls.clear()
-                bad = self.add("异常账户", "offline-bad")
-                self.add("可用账户", "offline-good")
-                self.gateway.statuses["offline-bad"] = code
-                body = {"model": "text-embedding-3-small", "input": "hello"} if embeddings else dict(self.payload, stream=streaming)
-                status, data, _ = self.request("/v1/embeddings" if embeddings else "/v1/chat/completions", body, raw=streaming)
-                self.assertEqual(status, 200)
-                self.assertEqual(self.gateway.calls, [("POST", "offline-bad"), ("POST", "offline-good")])
-                self.assertGreater(self.store.account(bad)["cooldown_until"], time.time())
-                if streaming:
-                    self.assertEqual(parse_sse(data)[-1], "[DONE]")
+                self.add("未开通计费一", "offline-payg-one")
+                self.add("未开通计费二", "offline-payg-two")
+                self.gateway.statuses.update({"offline-payg-one": 402, "offline-payg-two": 402})
+                status, data, headers = self.request("/v1/chat/completions", dict(self.payload, stream=streaming))
+                self.assertEqual(status, 402)
+                self.assertEqual(data, PAYG_ERROR)
+                self.assertIn("application/json", headers["Content-Type"])
+                self.assertEqual(self.gateway.calls, [("POST", "offline-payg-one"), ("POST", "offline-payg-two")])
+                self.assertEqual(self.request("/v1/chat/completions", self.payload)[0], 503)
+                self.assertEqual(len(self.gateway.calls), 2)
+                for account in Store(self.directory.name).dashboard()["accounts"]:
+                    self.assertEqual(account["last_status"], 402)
+                    self.assertAlmostEqual(account["cooldown_until"] - account["last_checked"], 300, delta=1)
+
+    def test_models_probe_does_not_clear_billing_failure_and_paid_calls_can_recover(self):
+        self.setup_admin()
+        key = "offline-payg-disabled"
+        account_id = self.add(key=key)
+        self.gateway.statuses[key] = 402
+        self.gateway.probe_statuses = {key: 200}
+        self.assertEqual(self.request("/v1/chat/completions", self.payload)[1], PAYG_ERROR)
+        failed = self.store.account(account_id)
+        for _ in range(2):
+            status, result, _ = self.request(f"/admin/api/accounts/{account_id}/test", {})
+            self.assertEqual(status, 200)
+            self.assertTrue(result["ok"])
+            self.assertIn("不验证计费", result["message"])
+            current = self.store.account(account_id)
+            self.assertEqual(current["last_status"], 402)
+            self.assertEqual(current["cooldown_until"], failed["cooldown_until"])
+            self.assertEqual(current["last_checked"], failed["last_checked"])
+            self.assertEqual(current["requests"], 1)
+        self.assertEqual(self.request("/v1/chat/completions", self.payload)[0], 503)
+        self.assertEqual(self.gateway.calls, [("POST", key), ("GET", key), ("GET", key)])
+        # Simulate the existing cooldown expiring, then a billing configuration fix upstream.
+        with self.store.transaction() as db:
+            db.execute("UPDATE accounts SET cooldown_until=? WHERE id=?", (time.time() - 1, account_id))
+        self.gateway.statuses[key] = 200
+        self.assertEqual(self.request("/v1/chat/completions", self.payload)[0], 200)
+        recovered = self.store.account(account_id)
+        self.assertEqual(recovered["last_status"], 200)
+        self.assertEqual(recovered["cooldown_until"], 0)
+        self.assertEqual(recovered["successes"], 1)
+        self.assertEqual(self.store.dashboard()["total_requests"], 2)
+
+    def test_midstream_billing_failure_does_not_switch_accounts(self):
+        first_id = self.add("一", "offline-first")
+        self.add("二", "offline-second")
+        called, closed = [], []
+
+        def operation(key):
+            called.append(key)
+            try:
+                yield upstream.encode_sse(completion_chunk("already started"))
+                raise upstream.UpstreamError(402, PAYG_ERROR)
+            finally:
+                closed.append(key)
+
+        events = self.httpd.pool.stream("gpt-6-luna", operation)
+        self.assertIn("already started", next(events))
+        with self.assertRaises(upstream.UpstreamError) as raised:
+            next(events)
+        self.assertEqual(raised.exception.status, 402)
+        self.assertEqual(called, ["offline-first"])
+        self.assertEqual(closed, called)
+        self.assertEqual(self.store.account(first_id)["last_status"], 402)
+        self.assertEqual(self.store.dashboard()["total_successes"], 0)
 
     def test_server_error_does_not_replay_on_another_account(self):
         self.add("一", "offline-first")
